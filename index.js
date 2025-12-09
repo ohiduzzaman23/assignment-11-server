@@ -3,7 +3,10 @@ const express = require("express");
 const cors = require("cors");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const admin = require("firebase-admin");
+
 const port = process.env.PORT || 3000;
+
+// Firebase Admin Initialization
 const decoded = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString(
   "utf-8"
 );
@@ -13,7 +16,8 @@ admin.initializeApp({
 });
 
 const app = express();
-// middleware
+
+// Middleware
 app.use(
   cors({
     origin: [
@@ -27,23 +31,21 @@ app.use(
 );
 app.use(express.json());
 
-// jwt middlewares
+// JWT Middleware
 const verifyJWT = async (req, res, next) => {
   const token = req?.headers?.authorization?.split(" ")[1];
-  console.log(token);
   if (!token) return res.status(401).send({ message: "Unauthorized Access!" });
+
   try {
     const decoded = await admin.auth().verifyIdToken(token);
     req.tokenEmail = decoded.email;
-    console.log(decoded);
     next();
   } catch (err) {
-    console.log(err);
     return res.status(401).send({ message: "Unauthorized Access!", err });
   }
 };
 
-// Create a MongoClient with a MongoClientOptions object to set the Stable API version
+// MongoDB Client
 const client = new MongoClient(process.env.MONGODB_URL, {
   serverApi: {
     version: ServerApiVersion.v1,
@@ -51,38 +53,53 @@ const client = new MongoClient(process.env.MONGODB_URL, {
     deprecationErrors: true,
   },
 });
+
 async function run() {
   try {
     const db = client.db("life-lessonsDB");
     const lessonCollection = db.collection("lessons");
 
-    // =========== start ============
+    // ================= ROUTES =================
 
-    // Save a plant data in db
+    // Ping
+    app.get("/", (req, res) => {
+      res.send("Hello from Server..");
+    });
+
+    // CREATE a lesson
     app.post("/lessons", async (req, res) => {
       const lessonData = req.body;
       const result = await lessonCollection.insertOne(lessonData);
       res.send(result);
     });
 
-    // get all plants from db
+    // GET lessons (all or limited)
     app.get("/lessons", async (req, res) => {
-      const result = await lessonCollection.find().sort({ _id: -1 }).toArray();
-      res.send(result);
+      try {
+        const limit = parseInt(req.query.limit); // optional
+        let cursor = lessonCollection.find().sort({ _id: -1 });
+        if (limit) cursor = cursor.limit(limit);
+        const lessons = await cursor.toArray();
+        res.send(lessons);
+      } catch (error) {
+        res.status(500).send({ message: error.message });
+      }
     });
 
-    // get one plants from db
+    // GET single lesson by id
     app.get("/lessons/:id", async (req, res) => {
       const id = req.params.id;
-      const result = await lessonCollection.findOne({ _id: new ObjectId(id) });
-      res.send(result);
+      const lesson = await lessonCollection.findOne({ _id: new ObjectId(id) });
+      res.send(lesson);
     });
 
+    // ================= COMMENTS =================
+
     // Add a comment
-    app.post("/lessons/:id/comments", async (req, res) => {
+    app.post("/lessons/:id/comments", verifyJWT, async (req, res) => {
       const lessonId = req.params.id;
       const { text } = req.body;
-      const user = req.tokenEmail; // JWT থেকে current user
+      const user = req.tokenEmail;
 
       if (!text)
         return res.status(400).send({ message: "Comment text required" });
@@ -96,7 +113,7 @@ async function run() {
         createdAt: new Date(),
       };
 
-      const result = await lessonCollection.updateOne(
+      await lessonCollection.updateOne(
         { _id: new ObjectId(lessonId) },
         { $push: { comments: newComment } }
       );
@@ -104,58 +121,61 @@ async function run() {
       res.send(newComment);
     });
 
-    // Add a reply
-    app.post("/lessons/:id/comments/:commentId/replies", async (req, res) => {
-      const { id, commentId } = req.params;
-      const { text } = req.body;
-      const user = req.tokenEmail;
+    // Add a reply to a comment
+    app.post(
+      "/lessons/:id/comments/:commentId/replies",
+      verifyJWT,
+      async (req, res) => {
+        const { id, commentId } = req.params;
+        const { text } = req.body;
+        const user = req.tokenEmail;
 
-      if (!text)
-        return res.status(400).send({ message: "Reply text required" });
+        if (!text)
+          return res.status(400).send({ message: "Reply text required" });
 
-      const newReply = {
-        _id: new ObjectId(),
-        user,
-        text,
-        createdAt: new Date(),
-      };
+        const newReply = {
+          _id: new ObjectId(),
+          user,
+          text,
+          createdAt: new Date(),
+        };
 
-      const result = await lessonCollection.updateOne(
-        { _id: new ObjectId(id), "comments._id": new ObjectId(commentId) },
-        { $push: { "comments.$.replies": newReply } }
-      );
+        await lessonCollection.updateOne(
+          { _id: new ObjectId(id), "comments._id": new ObjectId(commentId) },
+          { $push: { "comments.$.replies": newReply } }
+        );
 
-      res.send(newReply);
-    });
+        res.send(newReply);
+      }
+    );
 
     // Like a comment
-    app.post("/lessons/:id/comments/:commentId/like", async (req, res) => {
-      const { id, commentId } = req.params;
+    app.post(
+      "/lessons/:id/comments/:commentId/like",
+      verifyJWT,
+      async (req, res) => {
+        const { id, commentId } = req.params;
 
-      await lessonCollection.updateOne(
-        { _id: new ObjectId(id), "comments._id": new ObjectId(commentId) },
-        { $inc: { "comments.$.likes": 1 } }
-      );
+        await lessonCollection.updateOne(
+          { _id: new ObjectId(id), "comments._id": new ObjectId(commentId) },
+          { $inc: { "comments.$.likes": 1 } }
+        );
 
-      res.send({ success: true });
-    });
-
-    // =========== end ============
-    // Send a ping to confirm a successful connection
-    await client.db("admin").command({ ping: 1 });
-    console.log(
-      "Pinged your deployment. You successfully connected to MongoDB!"
+        res.send({ success: true });
+      }
     );
+
+    // Ping to check DB
+    await client.db("admin").command({ ping: 1 });
+    console.log("MongoDB connected successfully!");
   } finally {
-    // Ensures that the client will close when you finish/error
+    // client close handled by server shutdown
   }
 }
+
 run().catch(console.dir);
 
-app.get("/", (req, res) => {
-  res.send("Hello from Server..");
-});
-
+// Start server
 app.listen(port, () => {
   console.log(`Server is running on port ${port}`);
 });
