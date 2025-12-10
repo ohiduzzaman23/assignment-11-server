@@ -6,11 +6,12 @@ const admin = require("firebase-admin");
 
 const port = process.env.PORT || 3000;
 
-// Firebase Admin Initialization
+// Firebase Admin
 const decoded = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString(
   "utf-8"
 );
 const serviceAccount = JSON.parse(decoded);
+
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
 });
@@ -30,7 +31,7 @@ app.use(
 );
 app.use(express.json());
 
-// JWT Middleware
+// JWT Verify Middleware
 const verifyJWT = async (req, res, next) => {
   const token = req?.headers?.authorization?.split(" ")[1];
   if (!token) return res.status(401).send({ message: "Unauthorized Access!" });
@@ -40,7 +41,7 @@ const verifyJWT = async (req, res, next) => {
     req.tokenEmail = decoded.email;
     next();
   } catch (err) {
-    return res.status(401).send({ message: "Unauthorized Access!", err });
+    return res.status(401).send({ message: "Unauthorized Access!" });
   }
 };
 
@@ -55,45 +56,79 @@ const client = new MongoClient(process.env.MONGODB_URL, {
 async function run() {
   try {
     const db = client.db("life-lessonsDB");
-    const lessonCollection = db.collection("lessons");
 
-    // Root
+    const lessonCollection = db.collection("lessons");
+    const contributorsCollection = db.collection("contributors");
+
+    // Root route
     app.get("/", (req, res) => res.send("Hello from Server.."));
 
     // Create Lesson
     app.post("/lessons", async (req, res) => {
       const lessonData = req.body;
+
+      // Initialize lesson stats
       lessonData.likes = 0;
       lessonData.views = 0;
       lessonData.saves = 0;
       lessonData.comments = [];
+      lessonData.shares = 0;
       lessonData.createdAt = new Date();
 
+      // Ensure author info is present
+      lessonData.author = lessonData.displayName || "Anonymous";
+      lessonData.authorAvatar = lessonData.avatar || "/images/default.jpg";
+
+      // Insert lesson
       const result = await lessonCollection.insertOne(lessonData);
+
+      // Update contributors
+      if (lessonData.author) {
+        await contributorsCollection.updateOne(
+          { name: lessonData.author },
+          {
+            $setOnInsert: {
+              name: lessonData.author,
+              avatar: lessonData.authorAvatar,
+              createdAt: new Date(),
+            },
+            $inc: { lessons: 1 },
+          },
+          { upsert: true }
+        );
+      }
+
       res.send(result);
     });
 
+    // Get All Lessons
     app.get("/lessons", async (req, res) => {
       let limit = parseInt(req.query.limit);
-
       const cursor = lessonCollection.find().sort({ _id: -1 });
-
-      if (!isNaN(limit)) {
-        cursor.limit(limit);
-      }
+      if (!isNaN(limit)) cursor.limit(limit);
 
       const lessons = await cursor.toArray();
       res.send(lessons);
     });
 
-    // Get Single Lesson
+    // Get Single Lesson + Author's
     app.get("/lessons/:id", async (req, res) => {
       const id = req.params.id;
       const lesson = await lessonCollection.findOne({ _id: new ObjectId(id) });
+      if (!lesson) return res.status(404).send({ message: "Lesson not found" });
+
+      let authorLessonCount = 0;
+      if (lesson.author) {
+        authorLessonCount = await lessonCollection.countDocuments({
+          author: lesson.author,
+        });
+      }
+      lesson.authorLessonCount = authorLessonCount;
+
       res.send(lesson);
     });
 
-    // Most Saved Lessons
+    // Get top saved lessons
     app.get("/lessons-worth", async (req, res) => {
       try {
         const topSaved = await lessonCollection
@@ -101,38 +136,56 @@ async function run() {
           .sort({ saves: -1 })
           .limit(5)
           .toArray();
-
         res.send(topSaved);
       } catch (error) {
         res.status(500).send({ message: "Failed to fetch lessons", error });
       }
     });
 
-    const contributorsCollection = db.collection("contributors");
     // Get Contributors
     app.get("/contributors", async (req, res) => {
-      const contributors = await contributorsCollection
-        .find()
-        .sort({ lessons: -1 }) // sort by highest lessons
-        .toArray();
+      try {
+        const lessons = await lessonCollection.find().toArray();
 
-      res.send(contributors);
+        const userMap = {};
+        lessons.forEach((lesson) => {
+          const userEmail =
+            lesson.user || `anonymous_${lesson._id}@example.com`;
+          if (userMap[userEmail]) {
+            userMap[userEmail].lessons++;
+          } else {
+            userMap[userEmail] = {
+              id: userEmail,
+              name: lesson.displayName || "Anonymous",
+              avatar: lesson.avatar || "/images/default.jpg",
+              lessons: 1,
+            };
+          }
+        });
+
+        // Sort contributors
+        const contributors = Object.values(userMap)
+          .sort((a, b) => b.lessons - a.lessons)
+          .slice(0, 4); // top 4
+
+        res.send(contributors);
+      } catch (err) {
+        res.status(500).send({ message: err.message });
+      }
     });
-
+    // Add Contributor
     app.post("/contributors", async (req, res) => {
       const contributor = req.body;
-
-      // Default structure
       contributor.name = contributor.name || "Anonymous";
       contributor.lessons = contributor.lessons || 0;
-      contributor.avatar = contributor.avatar || "";
+      contributor.avatar = contributor.avatar || "/images/default.jpg";
       contributor.createdAt = new Date();
 
       const result = await contributorsCollection.insertOne(contributor);
       res.send(result);
     });
 
-    // Increase Views
+    // Increment views
     app.post("/lessons/:id/view", async (req, res) => {
       const id = req.params.id;
       await lessonCollection.updateOne(
@@ -142,7 +195,7 @@ async function run() {
       res.send({ success: true });
     });
 
-    // Like Lesson
+    // Like lesson
     app.post("/lessons/:id/like", async (req, res) => {
       const id = req.params.id;
       await lessonCollection.updateOne(
@@ -152,7 +205,7 @@ async function run() {
       res.send({ success: true });
     });
 
-    // Save Lesson
+    // Save lesson
     app.post("/lessons/:id/save", async (req, res) => {
       const id = req.params.id;
       await lessonCollection.updateOne(
@@ -162,7 +215,7 @@ async function run() {
       res.send({ success: true });
     });
 
-    // Add Comment
+    // Add comment
     app.post("/lessons/:id/comments", async (req, res) => {
       const lessonId = req.params.id;
       const { text } = req.body;
@@ -187,14 +240,13 @@ async function run() {
       res.send(newComment);
     });
 
-    // Add Reply
+    // Add reply
     app.post(
       "/lessons/:id/comments/:commentId/replies",
       verifyJWT,
       async (req, res) => {
         const { id, commentId } = req.params;
         const { text } = req.body;
-
         if (!text)
           return res.status(400).send({ message: "Reply text required" });
 
@@ -214,37 +266,35 @@ async function run() {
       }
     );
 
-    // Share
+    // Share counter
     app.post("/lessons/:id/share", async (req, res) => {
       const id = req.params.id;
-
       try {
         await lessonCollection.updateOne(
           { _id: new ObjectId(id) },
           { $inc: { shares: 1 } }
         );
-
-        res.send({ success: true, message: "Lesson shared!" });
+        res.send({ success: true });
       } catch (error) {
         res.status(500).send({ message: "Share failed!", error });
       }
     });
 
-    // Like Comment
+    // Like comment
     app.post("/lessons/:id/comments/:commentId/like", async (req, res) => {
       const { id, commentId } = req.params;
-
       await lessonCollection.updateOne(
         { _id: new ObjectId(id), "comments._id": new ObjectId(commentId) },
         { $inc: { "comments.$.likes": 1 } }
       );
-
       res.send({ success: true });
     });
 
+    // MongoDB Connection Test
     await client.db("admin").command({ ping: 1 });
     console.log("MongoDB Connected!");
   } finally {
+    // Do not close client, keep server running
   }
 }
 
