@@ -114,16 +114,23 @@ async function run() {
     // Get Single Lesson + Author's
     app.get("/lessons/:id", async (req, res) => {
       const id = req.params.id;
+
+      // Fetch the lesson
       const lesson = await lessonCollection.findOne({ _id: new ObjectId(id) });
       if (!lesson) return res.status(404).send({ message: "Lesson not found" });
 
-      let authorLessonCount = 0;
-      if (lesson.author) {
-        authorLessonCount = await lessonCollection.countDocuments({
-          author: lesson.author,
-        });
-      }
+      // Default fallback values
+      lesson.author = lesson.author || "Anonymous";
+      lesson.authorAvatar = lesson.authorAvatar || "/images/default.jpg";
+
+      // Count total lessons by this author
+      const authorLessonCount = await lessonCollection.countDocuments({
+        author: lesson.author,
+      });
       lesson.authorLessonCount = authorLessonCount;
+
+      // Optional: return authorId for frontend matching
+      lesson.authorId = lesson.author; // or use contributor _id if you have
 
       res.send(lesson);
     });
@@ -243,7 +250,7 @@ async function run() {
     // Add reply
     app.post(
       "/lessons/:id/comments/:commentId/replies",
-      verifyJWT,
+
       async (req, res) => {
         const { id, commentId } = req.params;
         const { text } = req.body;
@@ -289,6 +296,62 @@ async function run() {
       );
       res.send({ success: true });
     });
+
+    //--------- Dashboard -------------
+    // Update Lesson
+    app.put("/lessons/:id", async (req, res) => {
+      const id = req.params.id;
+      const { title, content, image } = req.body;
+
+      try {
+        const result = await lessonCollection.updateOne(
+          { _id: new ObjectId(id) },
+          {
+            $set: {
+              title,
+              content,
+              image,
+              updatedAt: new Date(),
+            },
+          }
+        );
+
+        if (result.matchedCount === 0) {
+          return res.status(404).send({ message: "Lesson not found" });
+        }
+
+        res.send({ message: "Lesson updated successfully" });
+      } catch (err) {
+        console.error(err);
+        res
+          .status(500)
+          .send({ message: "Failed to update lesson", error: err });
+      }
+    });
+
+    // Delete Lesson
+    app.delete("/lessons/:id", async (req, res) => {
+      const id = req.params.id;
+
+      try {
+        const result = await lessonCollection.deleteOne({
+          _id: new ObjectId(id),
+        });
+
+        if (result.deletedCount === 0) {
+          return res.status(404).send({ message: "Lesson not found" });
+        }
+
+        res.send({ message: "Lesson deleted successfully" });
+      } catch (err) {
+        console.error(err);
+        res
+          .status(500)
+          .send({ message: "Failed to delete lesson", error: err });
+      }
+    });
+
+    //---------end----------
 
     // MongoDB Connection Test
     await client.db("admin").command({ ping: 1 });
