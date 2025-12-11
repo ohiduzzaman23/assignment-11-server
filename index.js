@@ -2,8 +2,8 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const admin = require("firebase-admin");
-
 const port = process.env.PORT || 3000;
 
 // Firebase Admin
@@ -63,11 +63,10 @@ async function run() {
     // Root route
     app.get("/", (req, res) => res.send("Hello from Server.."));
 
-    // Create Lesson
+    // Post lessons
     app.post("/lessons", async (req, res) => {
       const lessonData = req.body;
 
-      // Initialize lesson stats
       lessonData.likes = 0;
       lessonData.views = 0;
       lessonData.saves = 0;
@@ -75,11 +74,10 @@ async function run() {
       lessonData.shares = 0;
       lessonData.createdAt = new Date();
 
-      // Ensure author info is present
-      lessonData.author = lessonData.displayName || "Anonymous";
-      lessonData.authorAvatar = lessonData.avatar || "/images/default.jpg";
+      lessonData.author = lessonData.author || "Anonymous";
+      lessonData.authorAvatar =
+        lessonData.authorAvatar || "/images/default.jpg";
 
-      // Insert lesson
       const result = await lessonCollection.insertOne(lessonData);
 
       // Update contributors
@@ -119,18 +117,15 @@ async function run() {
       const lesson = await lessonCollection.findOne({ _id: new ObjectId(id) });
       if (!lesson) return res.status(404).send({ message: "Lesson not found" });
 
-      // Default fallback values
       lesson.author = lesson.author || "Anonymous";
       lesson.authorAvatar = lesson.authorAvatar || "/images/default.jpg";
 
-      // Count total lessons by this author
       const authorLessonCount = await lessonCollection.countDocuments({
         author: lesson.author,
       });
       lesson.authorLessonCount = authorLessonCount;
 
-      // Optional: return authorId for frontend matching
-      lesson.authorId = lesson.author; // or use contributor _id if you have
+      lesson.authorId = lesson.author;
 
       res.send(lesson);
     });
@@ -143,7 +138,14 @@ async function run() {
           .sort({ saves: -1 })
           .limit(5)
           .toArray();
-        res.send(topSaved);
+
+        const lessonsWithAuthor = topSaved.map((lesson) => ({
+          ...lesson,
+          author: lesson.author || "Anonymous",
+          authorAvatar: lesson.authorAvatar || "/images/default.jpg",
+        }));
+
+        res.send(lessonsWithAuthor);
       } catch (error) {
         res.status(500).send({ message: "Failed to fetch lessons", error });
       }
@@ -155,25 +157,26 @@ async function run() {
         const lessons = await lessonCollection.find().toArray();
 
         const userMap = {};
+
         lessons.forEach((lesson) => {
-          const userEmail =
-            lesson.user || `anonymous_${lesson._id}@example.com`;
-          if (userMap[userEmail]) {
-            userMap[userEmail].lessons++;
+          const author = lesson.author || "Anonymous";
+          const avatar = lesson.authorAvatar || "/images/default.jpg";
+
+          if (userMap[author]) {
+            userMap[author].lessons++;
           } else {
-            userMap[userEmail] = {
-              id: userEmail,
-              name: lesson.displayName || "Anonymous",
-              avatar: lesson.avatar || "/images/default.jpg",
+            userMap[author] = {
+              id: author,
+              name: author,
+              avatar: avatar,
               lessons: 1,
             };
           }
         });
 
-        // Sort contributors
         const contributors = Object.values(userMap)
           .sort((a, b) => b.lessons - a.lessons)
-          .slice(0, 4); // top 4
+          .slice(0, 10);
 
         res.send(contributors);
       } catch (err) {
@@ -349,6 +352,35 @@ async function run() {
           .status(500)
           .send({ message: "Failed to delete lesson", error: err });
       }
+    });
+
+    //payment
+    app.post("/payment-checkout-session", async (req, res) => {
+      const paymentInfo = req.body;
+      const amount = parseInt(paymentInfo.cost) * 100;
+      const session = await stripe.checkout.sessions.create({
+        line_items: [
+          {
+            price_data: {
+              currency: "usd",
+              unit_amount: amount,
+              product_data: {
+                name: `Please pay for: ${paymentInfo.parcelName}`,
+              },
+            },
+            quantity: 1,
+          },
+        ],
+        mode: "payment",
+        metadata: {
+          parcelId: paymentInfo.parcelId,
+        },
+        customer_email: paymentInfo.senderEmail,
+        // success_url: `${process.env.SITE_DOMAIN}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+        // cancel_url: `${process.env.SITE_DOMAIN}/dashboard/payment-cancelled`,
+      });
+
+      res.send({ url: session.url });
     });
 
     //---------end----------
