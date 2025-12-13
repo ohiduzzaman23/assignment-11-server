@@ -56,8 +56,9 @@ const client = new MongoClient(process.env.MONGODB_URL, {
 async function run() {
   try {
     const db = client.db("life-lessonsDB");
-
+    const usersCollection = db.collection("users");
     const lessonCollection = db.collection("lessons");
+
     const contributorsCollection = db.collection("contributors");
 
     // Root route
@@ -142,6 +143,25 @@ async function run() {
       res.send({ url: session.url });
     });
 
+    app.patch("/payment-success", async (req, res) => {
+      const { session_id } = req.query;
+
+      if (!session_id) {
+        return res.status(400).send({ error: "Session ID missing" });
+      }
+
+      const session = await stripe.checkout.sessions.retrieve(session_id);
+
+      const transactionId = session.payment_intent;
+
+      const trackingId = "TRK-" + Date.now();
+
+      res.send({
+        transactionId,
+        trackingId,
+      });
+    });
+
     // Get Single Lesson + Author's
     app.get("/lessons/:id", async (req, res) => {
       const id = req.params.id;
@@ -163,6 +183,29 @@ async function run() {
       res.send(lesson);
     });
 
+    // unlock info
+    app.get("/lessons/:id", async (req, res) => {
+      const lessonId = req.params.id;
+      const userEmail = req.user?.email;
+
+      const lesson = await lessonCollection.findOne({
+        _id: ObjectId(lessonId),
+      });
+
+      let hasAccess = false;
+
+      if (!lesson.premiumOnly) {
+        hasAccess = true;
+      } else {
+        const user = await usersCollection.findOne({ email: userEmail });
+        hasAccess = user?.purchasedLessons?.includes(lessonId);
+      }
+
+      res.send({
+        ...lesson,
+        hasAccess,
+      });
+    });
     // Get top saved lessons
     app.get("/lessons-worth", async (req, res) => {
       try {
@@ -258,6 +301,21 @@ async function run() {
       res.send({ success: true });
     });
 
+    // Get saved lessons by user email
+    app.get("/favorites", async (req, res) => {
+      const email = req.query.email;
+      if (!email) return res.status(400).send({ message: "Email required" });
+
+      try {
+        const lessons = await lessonCollection
+          .find({ savedBy: email })
+          .toArray();
+        res.send({ lessons });
+      } catch (err) {
+        res.status(500).send({ message: err.message });
+      }
+    });
+
     // Add comment
     app.post("/lessons/:id/comments", async (req, res) => {
       const lessonId = req.params.id;
@@ -321,6 +379,28 @@ async function run() {
       } catch (error) {
         res.status(500).send({ message: "Share failed!", error });
       }
+    });
+
+    // report counter
+    app.post("/lessons/:id/report", async (req, res) => {
+      const { reason } = req.body;
+      const userEmail = req.tokenEmail;
+      const newReport = {
+        _id: new ObjectId(),
+        user: userEmail,
+        reason,
+        createdAt: new Date(),
+      };
+
+      await lessonCollection.updateOne(
+        { _id: new ObjectId(req.params.id) },
+        {
+          $inc: { report: 1 },
+          $push: { reports: newReport },
+        }
+      );
+
+      res.send({ success: true });
     });
 
     // Like comment
