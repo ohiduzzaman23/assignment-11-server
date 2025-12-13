@@ -109,6 +109,39 @@ async function run() {
       res.send(lessons);
     });
 
+    //payment related apis
+    app.post("/create-checkout-session", async (req, res) => {
+      const FIXED_BDT_PRICE = 1500;
+      const USD_RATE = 127;
+
+      const amount = Math.round((FIXED_BDT_PRICE / USD_RATE) * 100);
+
+      const session = await stripe.checkout.sessions.create({
+        line_items: [
+          {
+            price_data: {
+              currency: "usd",
+              unit_amount: amount,
+              product_data: {
+                name: req.body.lessonTitle || "Premium Lesson Access",
+                description: "Price ৳1500 BDT (charged in USD)",
+              },
+            },
+            quantity: 1,
+          },
+        ],
+        mode: "payment",
+        customer_email: req.body.senderEmail,
+        metadata: {
+          lessonId: req.body.lessonId,
+        },
+        success_url: `${process.env.CLIENT_DOMAIN}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${process.env.CLIENT_DOMAIN}/payment-cancelled/${req.body.lessonId}`,
+      });
+
+      res.send({ url: session.url });
+    });
+
     // Get Single Lesson + Author's
     app.get("/lessons/:id", async (req, res) => {
       const id = req.params.id;
@@ -352,35 +385,6 @@ async function run() {
           .status(500)
           .send({ message: "Failed to delete lesson", error: err });
       }
-    });
-
-    //payment
-    app.post("/payment-checkout-session", async (req, res) => {
-      const paymentInfo = req.body;
-      const amount = parseInt(paymentInfo.cost) * 100;
-      const session = await stripe.checkout.sessions.create({
-        line_items: [
-          {
-            price_data: {
-              currency: "usd",
-              unit_amount: amount,
-              product_data: {
-                name: `Please pay for: ${paymentInfo.parcelName}`,
-              },
-            },
-            quantity: 1,
-          },
-        ],
-        mode: "payment",
-        metadata: {
-          parcelId: paymentInfo.parcelId,
-        },
-        customer_email: paymentInfo.senderEmail,
-        // success_url: `${process.env.SITE_DOMAIN}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
-        // cancel_url: `${process.env.SITE_DOMAIN}/dashboard/payment-cancelled`,
-      });
-
-      res.send({ url: session.url });
     });
 
     //---------end----------
