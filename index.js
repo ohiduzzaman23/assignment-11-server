@@ -200,7 +200,7 @@ async function run() {
     app.post("/lessons/:id/report", verifyJWT, async (req, res) => {
       const { reason } = req.body;
       const userEmail = req.tokenEmail;
-
+      // new report
       const newReport = {
         _id: new ObjectId(),
         user: userEmail,
