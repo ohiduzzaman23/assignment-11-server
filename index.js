@@ -9,7 +9,7 @@ const port = process.env.PORT || 3000;
 
 const app = express();
 
-// -------------------- Firebase Admin --------------------
+// ---- Firebase Admin -------
 const decoded = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString(
   "utf-8"
 );
@@ -19,7 +19,7 @@ admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
 });
 
-// -------------------- Middleware --------------------
+// ------ Middleware -------
 app.use(
   cors({
     origin: [process.env.CLIENT_DOMAIN],
@@ -29,12 +29,12 @@ app.use(
 );
 app.use(express.json());
 
-// -------------------- MongoDB Client --------------------
+// -------- MongoDB Client ---------
 const client = new MongoClient(process.env.MONGODB_URL, {
   serverApi: { version: ServerApiVersion.v1, strict: true },
 });
 
-// -------------------- JWT Middleware --------------------
+// ------- JWT Middleware ------
 const verifyJWT = async (req, res, next) => {
   const token = req?.headers?.authorization?.split(" ")[1];
   if (!token) return res.status(401).send({ message: "Unauthorized" });
@@ -48,7 +48,7 @@ const verifyJWT = async (req, res, next) => {
   }
 };
 
-// -------------------- Run Server --------------------
+// ------ Run Server -------
 async function run() {
   try {
     const db = client.db("life-lessonsDB");
@@ -56,7 +56,7 @@ async function run() {
     const lessonCollection = db.collection("lessons");
     const contributorsCollection = db.collection("contributors");
 
-    // -------------------- Admin Middleware --------------------
+    // ----- Admin Middleware -----
     const verifyAdmin = async (req, res, next) => {
       try {
         const user = await usersCollection.findOne({ email: req.tokenEmail });
@@ -69,7 +69,7 @@ async function run() {
       }
     };
 
-    // -------------------- Routes --------------------
+    // -------- Routes --------
 
     // Root
     app.get("/", (req, res) => res.send("Hello from Server.."));
