@@ -415,7 +415,7 @@ async function run() {
       res.send({ success: true });
     });
 
-    //--------- Dashboard --------
+    //--------------- Dashboard ------------------
     // Update Lesson
     app.put("/lessons/:id", async (req, res) => {
       const id = req.params.id;
