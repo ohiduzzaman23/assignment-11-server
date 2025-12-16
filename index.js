@@ -4,9 +4,12 @@ const cors = require("cors");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const admin = require("firebase-admin");
+
 const port = process.env.PORT || 3000;
 
-// Firebase Admin
+const app = express();
+
+// -------------------- Firebase Admin --------------------
 const decoded = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString(
   "utf-8"
 );
@@ -16,15 +19,7 @@ admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
 });
 
-const app = express();
-
-// Middleware
-app.use(
-  cors({
-    origin: ["http://localhost:5173", "http://localhost:5174"],
-    credentials: true,
-  })
-);
+// -------------------- Middleware --------------------
 app.use(
   cors({
     origin: [process.env.CLIENT_DOMAIN],
@@ -34,7 +29,12 @@ app.use(
 );
 app.use(express.json());
 
-// jwt middlewares
+// -------------------- MongoDB Client --------------------
+const client = new MongoClient(process.env.MONGODB_URL, {
+  serverApi: { version: ServerApiVersion.v1, strict: true },
+});
+
+// -------------------- JWT Middleware --------------------
 const verifyJWT = async (req, res, next) => {
   const token = req?.headers?.authorization?.split(" ")[1];
   if (!token) return res.status(401).send({ message: "Unauthorized" });
@@ -48,39 +48,34 @@ const verifyJWT = async (req, res, next) => {
   }
 };
 
-// verifyAdmin
-const verifyAdmin = async (req, res, next) => {
-  const email = req.tokenEmail;
-
-  const user = await usersCollection.findOne({ email });
-
-  if (!user || user.role !== "admin") {
-    return res.status(403).send({ message: "Forbidden Access" });
-  }
-
-  next();
-};
-
-// MongoDB Client
-const client = new MongoClient(process.env.MONGODB_URL, {
-  serverApi: {
-    version: ServerApiVersion.v1,
-    strict: true,
-  },
-});
-
+// -------------------- Run Server --------------------
 async function run() {
   try {
     const db = client.db("life-lessonsDB");
     const usersCollection = db.collection("users");
     const lessonCollection = db.collection("lessons");
-
     const contributorsCollection = db.collection("contributors");
 
-    // Root route
+    // -------------------- Admin Middleware --------------------
+    const verifyAdmin = async (req, res, next) => {
+      try {
+        const user = await usersCollection.findOne({ email: req.tokenEmail });
+        if (!user || user.role !== "admin") {
+          return res.status(403).send({ message: "Forbidden Access" });
+        }
+        next();
+      } catch (err) {
+        res.status(500).send({ message: "Server error" });
+      }
+    };
+
+    // -------------------- Routes --------------------
+
+    // Root
     app.get("/", (req, res) => res.send("Hello from Server.."));
 
-    // Post lessons
+    // ----- Lessons -----
+    // Post a lesson
     app.post("/lessons", verifyJWT, async (req, res) => {
       const lessonData = req.body;
 
@@ -93,6 +88,7 @@ async function run() {
       lessonData.author = lessonData.author || "Anonymous";
       lessonData.authorAvatar =
         lessonData.authorAvatar || "/images/default.jpg";
+
       const result = await lessonCollection.insertOne(lessonData);
 
       // Update contributors
@@ -110,10 +106,11 @@ async function run() {
           { upsert: true }
         );
       }
+
       res.send(result);
     });
 
-    // Get Lessons
+    // Get all lessons
     app.get("/lessons", async (req, res) => {
       let limit = parseInt(req.query.limit);
       const cursor = lessonCollection.find().sort({ _id: -1 });
@@ -123,102 +120,23 @@ async function run() {
       res.send(lessons);
     });
 
-    //payment related apis
-    app.post("/create-checkout-session", async (req, res) => {
-      const FIXED_BDT_PRICE = 1500;
-      const USD_RATE = 127;
-
-      const amount = Math.round((FIXED_BDT_PRICE / USD_RATE) * 100);
-
-      const session = await stripe.checkout.sessions.create({
-        line_items: [
-          {
-            price_data: {
-              currency: "usd",
-              unit_amount: amount,
-              product_data: {
-                name: req.body.lessonTitle || "Premium Lesson Access",
-                description: "Price ৳1500 BDT (charged in USD)",
-              },
-            },
-            quantity: 1,
-          },
-        ],
-        mode: "payment",
-        customer_email: req.body.senderEmail,
-        metadata: {
-          lessonId: req.body.lessonId,
-        },
-        success_url: `${process.env.CLIENT_DOMAIN}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${process.env.CLIENT_DOMAIN}/payment-cancelled/${req.body.lessonId}`,
-      });
-
-      res.send({ url: session.url });
-    });
-
-    app.patch("/payment-success", async (req, res) => {
-      const { session_id } = req.query;
-
-      if (!session_id) {
-        return res.status(400).send({ error: "Session ID missing" });
-      }
-
-      const session = await stripe.checkout.sessions.retrieve(session_id);
-
-      const transactionId = session.payment_intent;
-
-      const trackingId = "TRK-" + Date.now();
-
-      res.send({
-        transactionId,
-        trackingId,
-      });
-    });
-
-    // Get Lesson + Authors
+    // Get single lesson + author info
     app.get("/lessons/:id", async (req, res) => {
       const id = req.params.id;
-
-      // Fetch lesson
       const lesson = await lessonCollection.findOne({ _id: new ObjectId(id) });
+
       if (!lesson) return res.status(404).send({ message: "Lesson not found" });
 
       lesson.author = lesson.author || "Anonymous";
       lesson.authorAvatar = lesson.authorAvatar || "/images/default.jpg";
-
-      const authorLessonCount = await lessonCollection.countDocuments({
+      lesson.authorLessonCount = await lessonCollection.countDocuments({
         author: lesson.author,
       });
-      lesson.authorLessonCount = authorLessonCount;
-
       lesson.authorId = lesson.author;
 
       res.send(lesson);
     });
 
-    // unlock info
-    app.get("/lessons/:id", async (req, res) => {
-      const lessonId = req.params.id;
-      const userEmail = req.user?.email;
-
-      const lesson = await lessonCollection.findOne({
-        _id: ObjectId(lessonId),
-      });
-
-      let hasAccess = false;
-
-      if (!lesson.premiumOnly) {
-        hasAccess = true;
-      } else {
-        const user = await usersCollection.findOne({ email: userEmail });
-        hasAccess = user?.purchasedLessons?.includes(lessonId);
-      }
-
-      res.send({
-        ...lesson,
-        hasAccess,
-      });
-    });
     // Get top saved lessons
     app.get("/lessons-worth", async (req, res) => {
       try {
@@ -227,61 +145,15 @@ async function run() {
           .sort({ saves: -1 })
           .limit(5)
           .toArray();
-
         const lessonsWithAuthor = topSaved.map((lesson) => ({
           ...lesson,
           author: lesson.author || "Anonymous",
           authorAvatar: lesson.authorAvatar || "/images/default.jpg",
         }));
-
         res.send(lessonsWithAuthor);
       } catch (error) {
         res.status(500).send({ message: "Failed to fetch lessons", error });
       }
-    });
-
-    // Get Contributors
-    app.get("/contributors", async (req, res) => {
-      try {
-        const lessons = await lessonCollection.find().toArray();
-
-        const userMap = {};
-
-        lessons.forEach((lesson) => {
-          const author = lesson.author || "Anonymous";
-          const avatar = lesson.authorAvatar || "/images/default.jpg";
-
-          if (userMap[author]) {
-            userMap[author].lessons++;
-          } else {
-            userMap[author] = {
-              id: author,
-              name: author,
-              avatar: avatar,
-              lessons: 1,
-            };
-          }
-        });
-
-        const contributors = Object.values(userMap)
-          .sort((a, b) => b.lessons - a.lessons)
-          .slice(0, 10);
-
-        res.send(contributors);
-      } catch (err) {
-        res.status(500).send({ message: err.message });
-      }
-    });
-    // Add Contributor
-    app.post("/contributors", async (req, res) => {
-      const contributor = req.body;
-      contributor.name = contributor.name || "Anonymous";
-      contributor.lessons = contributor.lessons || 0;
-      contributor.avatar = contributor.avatar || "/images/default.jpg";
-      contributor.createdAt = new Date();
-
-      const result = await contributorsCollection.insertOne(contributor);
-      res.send(result);
     });
 
     // Increment views
@@ -314,32 +186,46 @@ async function run() {
       res.send({ success: true });
     });
 
-    // Get saved lessons
-    app.get("/favorites", async (req, res) => {
-      const email = req.query.email;
-      if (!email) return res.status(400).send({ message: "Email required" });
+    // Share lesson
+    app.post("/lessons/:id/share", async (req, res) => {
+      const id = req.params.id;
+      await lessonCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $inc: { shares: 1 } }
+      );
+      res.send({ success: true });
+    });
 
-      try {
-        const lessons = await lessonCollection
-          .find({ savedBy: email })
-          .toArray();
-        res.send({ lessons });
-      } catch (err) {
-        res.status(500).send({ message: err.message });
-      }
+    // Report lesson
+    app.post("/lessons/:id/report", verifyJWT, async (req, res) => {
+      const { reason } = req.body;
+      const userEmail = req.tokenEmail;
+
+      const newReport = {
+        _id: new ObjectId(),
+        user: userEmail,
+        reason,
+        createdAt: new Date(),
+      };
+
+      await lessonCollection.updateOne(
+        { _id: new ObjectId(req.params.id) },
+        { $inc: { report: 1 }, $push: { reports: newReport } }
+      );
+
+      res.send({ success: true });
     });
 
     // Add comment
-    app.post("/lessons/:id/comments", async (req, res) => {
-      const lessonId = req.params.id;
+    app.post("/lessons/:id/comments", verifyJWT, async (req, res) => {
       const { text } = req.body;
-
-      if (!text)
-        return res.status(400).send({ message: "Comment text required" });
+      const user = await usersCollection.findOne({ email: req.tokenEmail });
 
       const newComment = {
         _id: new ObjectId(),
-        user: req.tokenEmail,
+        user: user.email,
+        name: user.name,
+        avatar: user.photoURL || "https://i.pravatar.cc/40",
         text,
         likes: 0,
         replies: [],
@@ -347,7 +233,7 @@ async function run() {
       };
 
       await lessonCollection.updateOne(
-        { _id: new ObjectId(lessonId) },
+        { _id: new ObjectId(req.params.id) },
         { $push: { comments: newComment } }
       );
 
@@ -357,16 +243,20 @@ async function run() {
     // Add reply
     app.post(
       "/lessons/:id/comments/:commentId/replies",
-
+      verifyJWT,
       async (req, res) => {
-        const { id, commentId } = req.params;
         const { text } = req.body;
+        const { id, commentId } = req.params;
+
         if (!text)
           return res.status(400).send({ message: "Reply text required" });
 
+        const user = await usersCollection.findOne({ email: req.tokenEmail });
         const newReply = {
           _id: new ObjectId(),
-          user: req.tokenEmail,
+          user: user.email,
+          name: user.name,
+          avatar: user.photoURL || "https://i.pravatar.cc/30",
           text,
           createdAt: new Date(),
         };
@@ -380,126 +270,79 @@ async function run() {
       }
     );
 
-    // Share counter
-    app.post("/lessons/:id/share", async (req, res) => {
-      const id = req.params.id;
-      try {
+    // Like comment
+    app.post(
+      "/lessons/:id/comments/:commentId/like",
+      verifyJWT,
+      async (req, res) => {
+        const { id, commentId } = req.params;
         await lessonCollection.updateOne(
-          { _id: new ObjectId(id) },
-          { $inc: { shares: 1 } }
+          { _id: new ObjectId(id), "comments._id": new ObjectId(commentId) },
+          { $inc: { "comments.$.likes": 1 } }
         );
         res.send({ success: true });
-      } catch (error) {
-        res.status(500).send({ message: "Share failed!", error });
       }
-    });
+    );
 
-    // report counter
-    app.post("/lessons/:id/report", async (req, res) => {
-      const { reason } = req.body;
-      const userEmail = req.tokenEmail;
-      const newReport = {
-        _id: new ObjectId(),
-        user: userEmail,
-        reason,
-        createdAt: new Date(),
-      };
-
-      await lessonCollection.updateOne(
-        { _id: new ObjectId(req.params.id) },
-        {
-          $inc: { report: 1 },
-          $push: { reports: newReport },
-        }
-      );
-
-      res.send({ success: true });
-    });
-
-    // Like comment
-    app.post("/lessons/:id/comments/:commentId/like", async (req, res) => {
-      const { id, commentId } = req.params;
-      await lessonCollection.updateOne(
-        { _id: new ObjectId(id), "comments._id": new ObjectId(commentId) },
-        { $inc: { "comments.$.likes": 1 } }
-      );
-      res.send({ success: true });
-    });
-
-    //--------------- Dashboard ------------------
-    // Update Lesson
+    // Update lesson
     app.put("/lessons/:id", async (req, res) => {
-      const id = req.params.id;
+      const { id } = req.params;
       const { title, content, image } = req.body;
 
-      try {
-        const result = await lessonCollection.updateOne(
-          { _id: new ObjectId(id) },
-          {
-            $set: {
-              title,
-              content,
-              image,
-              updatedAt: new Date(),
-            },
-          }
-        );
+      const result = await lessonCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { title, content, image, updatedAt: new Date() } }
+      );
 
-        if (result.matchedCount === 0) {
-          return res.status(404).send({ message: "Lesson not found" });
-        }
+      if (result.matchedCount === 0)
+        return res.status(404).send({ message: "Lesson not found" });
 
-        res.send({ message: "Lesson updated successfully" });
-      } catch (err) {
-        console.error(err);
-        res
-          .status(500)
-          .send({ message: "Failed to update lesson", error: err });
-      }
+      res.send({ message: "Lesson updated successfully" });
     });
 
-    // Delete Lesson
+    // Delete lesson
     app.delete("/lessons/:id", async (req, res) => {
-      const id = req.params.id;
-
-      try {
-        const result = await lessonCollection.deleteOne({
-          _id: new ObjectId(id),
-        });
-
-        if (result.deletedCount === 0) {
-          return res.status(404).send({ message: "Lesson not found" });
-        }
-
-        res.send({ message: "Lesson deleted successfully" });
-      } catch (err) {
-        console.error(err);
-        res
-          .status(500)
-          .send({ message: "Failed to delete lesson", error: err });
-      }
+      const { id } = req.params;
+      const result = await lessonCollection.deleteOne({
+        _id: new ObjectId(id),
+      });
+      if (result.deletedCount === 0)
+        return res.status(404).send({ message: "Lesson not found" });
+      res.send({ message: "Lesson deleted successfully" });
     });
 
-    // Delete user
-    app.delete("/users/:userId", async (req, res) => {
-      const { userId } = req.params;
-      try {
-        const result = await usersCollection.deleteOne({
-          _id: new ObjectId(userId),
-        });
+    // ----- Contributors -----
+    app.get("/contributors", async (req, res) => {
+      const lessons = await lessonCollection.find().toArray();
+      const userMap = {};
 
-        if (result.deletedCount === 0)
-          return res.status(404).send({ message: "User not found" });
+      lessons.forEach((lesson) => {
+        const author = lesson.author || "Anonymous";
+        const avatar = lesson.authorAvatar || "/images/default.jpg";
 
-        res.send({ message: "User deleted successfully" });
-      } catch (err) {
-        console.error(err);
-        res.status(500).send({ message: "Failed to delete user", error: err });
-      }
+        if (userMap[author]) userMap[author].lessons++;
+        else userMap[author] = { id: author, name: author, avatar, lessons: 1 };
+      });
+
+      const contributors = Object.values(userMap)
+        .sort((a, b) => b.lessons - a.lessons)
+        .slice(0, 10);
+
+      res.send(contributors);
     });
 
-    // get all users admin
+    app.post("/contributors", async (req, res) => {
+      const contributor = req.body;
+      contributor.name = contributor.name || "Anonymous";
+      contributor.lessons = contributor.lessons || 0;
+      contributor.avatar = contributor.avatar || "/images/default.jpg";
+      contributor.createdAt = new Date();
 
+      const result = await contributorsCollection.insertOne(contributor);
+      res.send(result);
+    });
+
+    // ----- Users -----
     app.post("/users", verifyJWT, async (req, res) => {
       const { name, email } = req.body;
       const existingUser = await usersCollection.findOne({ email });
@@ -510,50 +353,87 @@ async function run() {
       res.send(result);
     });
 
-    // Get role
     app.get("/users/role", verifyJWT, async (req, res) => {
       const user = await usersCollection.findOne({ email: req.tokenEmail });
       res.send({ role: user?.role || "user" });
     });
 
     app.get("/users", verifyJWT, async (req, res) => {
-      try {
-        const result = await usersCollection.find().toArray();
-        res.send(result);
-      } catch (err) {
-        console.error(err);
-        res.status(500).send({ message: "Failed to fetch users", error: err });
-      }
+      const result = await usersCollection.find().toArray();
+      res.send(result);
     });
 
-    // ------------------
+    // Delete user (Admin)
+    app.delete("/users/:userId", verifyJWT, verifyAdmin, async (req, res) => {
+      const { userId } = req.params;
+      const result = await usersCollection.deleteOne({
+        _id: new ObjectId(userId),
+      });
+      if (result.deletedCount === 0)
+        return res.status(404).send({ message: "User not found" });
+      res.send({ message: "User deleted successfully" });
+    });
 
+    // Update role
     app.patch("/users/:id/update-role", async (req, res) => {
       const { id } = req.params;
       const { role } = req.body;
+      const result = await usersCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { role } }
+      );
 
-      try {
-        const result = await usersCollection.updateOne(
-          { _id: new ObjectId(id) },
-          { $set: { role } }
-        );
-
-        if (result.modifiedCount > 0) {
-          res.send({ success: true, message: "Role updated successfully!" });
-        } else {
-          res
-            .status(400)
-            .send({ success: false, message: "Failed to update role" });
-        }
-      } catch (err) {
-        console.error(err);
-        res.status(500).send({ success: false, message: "Server error" });
-      }
+      if (result.modifiedCount > 0)
+        res.send({ success: true, message: "Role updated successfully!" });
+      else
+        res
+          .status(400)
+          .send({ success: false, message: "Failed to update role" });
     });
 
-    //---------end----------
+    // ----- Stripe Payment -----
+    app.post("/create-checkout-session", async (req, res) => {
+      const FIXED_BDT_PRICE = 1500;
+      const USD_RATE = 127;
+      const amount = Math.round((FIXED_BDT_PRICE / USD_RATE) * 100);
 
-    // MongoDB Connection Test
+      const session = await stripe.checkout.sessions.create({
+        line_items: [
+          {
+            price_data: {
+              currency: "usd",
+              unit_amount: amount,
+              product_data: {
+                name: req.body.lessonTitle || "Premium Lesson Access",
+                description: "Price ৳1500 BDT (charged in USD)",
+              },
+            },
+            quantity: 1,
+          },
+        ],
+        mode: "payment",
+        customer_email: req.body.senderEmail,
+        metadata: { lessonId: req.body.lessonId },
+        success_url: `${process.env.CLIENT_DOMAIN}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${process.env.CLIENT_DOMAIN}/payment-cancelled/${req.body.lessonId}`,
+      });
+
+      res.send({ url: session.url });
+    });
+
+    app.patch("/payment-success", async (req, res) => {
+      const { session_id } = req.query;
+      if (!session_id)
+        return res.status(400).send({ error: "Session ID missing" });
+
+      const session = await stripe.checkout.sessions.retrieve(session_id);
+      const transactionId = session.payment_intent;
+      const trackingId = "TRK-" + Date.now();
+
+      res.send({ transactionId, trackingId });
+    });
+
+    // ------ MongoDB Test -------
     await client.db("admin").command({ ping: 1 });
     console.log("MongoDB Connected!");
   } finally {
