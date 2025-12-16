@@ -168,7 +168,7 @@ async function run() {
     app.get("/lessons/:id", async (req, res) => {
       const id = req.params.id;
 
-      // Fetch the lesson
+      // Fetch lesson
       const lesson = await lessonCollection.findOne({ _id: new ObjectId(id) });
       if (!lesson) return res.status(404).send({ message: "Lesson not found" });
 
