@@ -37,17 +37,28 @@ app.use(express.json());
 // jwt middlewares
 const verifyJWT = async (req, res, next) => {
   const token = req?.headers?.authorization?.split(" ")[1];
-  console.log(token);
-  if (!token) return res.status(401).send({ message: "Unauthorized Access!" });
+  if (!token) return res.status(401).send({ message: "Unauthorized" });
+
   try {
     const decoded = await admin.auth().verifyIdToken(token);
     req.tokenEmail = decoded.email;
-    console.log(decoded);
     next();
   } catch (err) {
-    console.log(err);
-    return res.status(401).send({ message: "Unauthorized Access!", err });
+    return res.status(401).send({ message: "Unauthorized" });
   }
+};
+
+// verifyAdmin
+const verifyAdmin = async (req, res, next) => {
+  const email = req.tokenEmail;
+
+  const user = await usersCollection.findOne({ email });
+
+  if (!user || user.role !== "admin") {
+    return res.status(403).send({ message: "Forbidden Access" });
+  }
+
+  next();
 };
 
 // MongoDB Client
@@ -469,22 +480,11 @@ async function run() {
       }
     });
 
-    // Get all users
-    app.get("/users", async (req, res) => {
-      try {
-        const users = await lessonCollection.find().toArray();
-        res.send(users);
-      } catch (err) {
-        res.status(500).send({ message: "Failed to fetch users", error: err });
-      }
-    });
-
     // Delete user
     app.delete("/users/:userId", async (req, res) => {
       const { userId } = req.params;
       try {
-        // Convert string to ObjectId
-        const result = await lessonCollection.deleteOne({
+        const result = await usersCollection.deleteOne({
           _id: new ObjectId(userId),
         });
 
@@ -499,29 +499,55 @@ async function run() {
     });
 
     // get all users admin
-    app.get("/users", async (req, res) => {
-      const adminEmail = req.tokenEmail;
-      const result = await lessonCollection
-        .find({ email: { $ne: adminEmail } })
-        .toArray();
+
+    app.post("/users", verifyJWT, async (req, res) => {
+      const { name, email } = req.body;
+      const existingUser = await usersCollection.findOne({ email });
+      if (existingUser) return res.send(existingUser);
+
+      const newUser = { name, email, role: "user", createdAt: new Date() };
+      const result = await usersCollection.insertOne(newUser);
       res.send(result);
     });
+
+    // Get role
+    app.get("/users/role", verifyJWT, async (req, res) => {
+      const user = await usersCollection.findOne({ email: req.tokenEmail });
+      res.send({ role: user?.role || "user" });
+    });
+
+    app.get("/users", verifyJWT, async (req, res) => {
+      try {
+        const result = await usersCollection.find().toArray();
+        res.send(result);
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ message: "Failed to fetch users", error: err });
+      }
+    });
+
+    // ------------------
 
     app.patch("/users/:id/update-role", async (req, res) => {
       const { id } = req.params;
       const { role } = req.body;
 
-      const result = await lessonCollection.updateOne(
-        { _id: new ObjectId(id) },
-        { $set: { authorRole: role } }
-      );
+      try {
+        const result = await usersCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { role } }
+        );
 
-      if (result.modifiedCount > 0) {
-        res.send({ success: true, message: "Role updated successfully!" });
-      } else {
-        res
-          .status(400)
-          .send({ success: false, message: "Failed to update role" });
+        if (result.modifiedCount > 0) {
+          res.send({ success: true, message: "Role updated successfully!" });
+        } else {
+          res
+            .status(400)
+            .send({ success: false, message: "Failed to update role" });
+        }
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ success: false, message: "Server error" });
       }
     });
 
