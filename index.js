@@ -177,13 +177,43 @@ async function run() {
     });
 
     // Save lesson
-    app.post("/lessons/:id/save", async (req, res) => {
-      const id = req.params.id;
+    app.post("/lessons/:id/save", verifyJWT, async (req, res) => {
+      const lessonId = req.params.id;
+      const userEmail = req.tokenEmail;
+
       await lessonCollection.updateOne(
-        { _id: new ObjectId(id) },
+        { _id: new ObjectId(lessonId) },
         { $inc: { saves: 1 } }
       );
+
+      const user = await usersCollection.findOne({ email: userEmail });
+
+      if (!user.savedLessons) user.savedLessons = [];
+
+      if (!user.savedLessons.includes(lessonId)) {
+        await usersCollection.updateOne(
+          { email: userEmail },
+          { $push: { savedLessons: lessonId } }
+        );
+      }
+
       res.send({ success: true });
+    });
+
+    // user save
+    app.get("/users/:id/saved-lessons", async (req, res) => {
+      const userId = req.params.id;
+
+      const user = await usersCollection.findOne({ _id: new ObjectId(userId) });
+      if (!user) return res.status(404).send({ message: "User not found" });
+
+      const savedLessonIds = user.savedLessons || [];
+
+      const lessons = await lessonCollection
+        .find({ _id: { $in: savedLessonIds.map((id) => new ObjectId(id)) } })
+        .toArray();
+
+      res.send(lessons);
     });
 
     // Share lesson
@@ -217,52 +247,33 @@ async function run() {
     });
 
     // Add comment
-    app.post("/lessons/:id/comments", verifyJWT, async (req, res) => {
-      const { text } = req.body;
-      const user = await usersCollection.findOne({ email: req.tokenEmail });
-
-      const newComment = {
-        _id: new ObjectId(),
-        user: user.email,
-        name: user.name,
-        avatar: user.photoURL || "https://i.pravatar.cc/40",
-        text,
-        likes: 0,
-        replies: [],
-        createdAt: new Date(),
-      };
-
-      await lessonCollection.updateOne(
-        { _id: new ObjectId(req.params.id) },
-        { $push: { comments: newComment } }
-      );
-
-      res.send(newComment);
-    });
-
-    // Add comment reply
     app.post(
       "/lessons/:id/comments/:commentId/replies",
       verifyJWT,
       async (req, res) => {
-        const { text } = req.body;
-        const { id, commentId } = req.params;
-
+        const { text, name, avatar } = req.body;
         if (!text)
           return res.status(400).send({ message: "Reply text required" });
 
         const user = await usersCollection.findOne({ email: req.tokenEmail });
+
         const newReply = {
           _id: new ObjectId(),
           user: user.email,
-          name: user.name,
-          avatar: user.photoURL || "https://i.pravatar.cc/30",
+          name: name || user.name || "Anonymous",
+          avatar:
+            user.photoURL ||
+            avatar ||
+            "https://i.pravatar.cc/30?u=" + user.email,
           text,
           createdAt: new Date(),
         };
 
         await lessonCollection.updateOne(
-          { _id: new ObjectId(id), "comments._id": new ObjectId(commentId) },
+          {
+            _id: new ObjectId(req.params.id),
+            "comments._id": new ObjectId(req.params.commentId),
+          },
           { $push: { "comments.$.replies": newReply } }
         );
 
@@ -283,6 +294,31 @@ async function run() {
         res.send({ success: true });
       }
     );
+
+    // Add new comment
+    app.post("/lessons/:id/comments", verifyJWT, async (req, res) => {
+      const { text, avatar, name } = req.body;
+      const lessonId = req.params.id;
+      const user = await usersCollection.findOne({ email: req.tokenEmail });
+
+      const newComment = {
+        _id: new ObjectId(),
+        user: user.email,
+        name: name || user.name,
+        avatar: avatar || user.photoURL || "https://i.pravatar.cc/30",
+        text,
+        likes: 0,
+        replies: [],
+        createdAt: new Date(),
+      };
+
+      const result = await lessonCollection.updateOne(
+        { _id: new ObjectId(lessonId) },
+        { $push: { comments: newComment } }
+      );
+
+      res.send(newComment);
+    });
 
     // Update lesson
     app.put("/lessons/:id", async (req, res) => {
@@ -433,6 +469,35 @@ async function run() {
       res.send({ transactionId, trackingId });
     });
 
+    // Get similar lessons
+    app.get("/lessons/:id/similar", async (req, res) => {
+      try {
+        const { id } = req.params;
+
+        const currentLesson = await lessonCollection.findOne({
+          _id: new ObjectId(id),
+        });
+
+        if (!currentLesson) {
+          return res.status(404).send({ message: "Lesson not found" });
+        }
+
+        const similarLessons = await lessonCollection
+          .find({
+            _id: { $ne: new ObjectId(id) },
+            $or: [
+              { category: currentLesson.category },
+              { tone: currentLesson.tone },
+            ],
+          })
+          .limit(4)
+          .toArray();
+
+        res.send(similarLessons);
+      } catch (error) {
+        res.status(500).send({ message: "Failed to load similar lessons" });
+      }
+    });
     // ------ MongoDB Test -------
     await client.db("admin").command({ ping: 1 });
     console.log("MongoDB Connected!");
