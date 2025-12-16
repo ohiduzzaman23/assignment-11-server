@@ -498,7 +498,7 @@ async function run() {
       }
     });
 
-    // get all users for admin
+    // get all users admin
     app.get("/users", async (req, res) => {
       const adminEmail = req.tokenEmail;
       const result = await lessonCollection
