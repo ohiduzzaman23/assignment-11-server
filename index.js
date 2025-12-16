@@ -164,7 +164,7 @@ async function run() {
       });
     });
 
-    // Get Single Lesson + Author's
+    // Get Lesson + Authors
     app.get("/lessons/:id", async (req, res) => {
       const id = req.params.id;
 
