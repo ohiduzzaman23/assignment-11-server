@@ -102,7 +102,7 @@ async function run() {
       res.send(result);
     });
 
-    // Get All Lessons
+    // Get Lessons
     app.get("/lessons", async (req, res) => {
       let limit = parseInt(req.query.limit);
       const cursor = lessonCollection.find().sort({ _id: -1 });
