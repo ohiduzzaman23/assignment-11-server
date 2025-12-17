@@ -90,7 +90,6 @@ async function run() {
         lessonData.authorAvatar || "/images/default.jpg";
 
       const result = await lessonCollection.insertOne(lessonData);
-
       // Update contributors
       if (lessonData.author) {
         await contributorsCollection.updateOne(
@@ -115,7 +114,6 @@ async function run() {
       let limit = parseInt(req.query.limit);
       const cursor = lessonCollection.find().sort({ _id: -1 });
       if (!isNaN(limit)) cursor.limit(limit);
-
       const lessons = await cursor.toArray();
       res.send(lessons);
     });
@@ -124,7 +122,6 @@ async function run() {
     app.get("/lessons/:id", async (req, res) => {
       const id = req.params.id;
       const lesson = await lessonCollection.findOne({ _id: new ObjectId(id) });
-
       if (!lesson) return res.status(404).send({ message: "Lesson not found" });
 
       lesson.author = lesson.author || "Anonymous";
@@ -180,14 +177,12 @@ async function run() {
     app.post("/lessons/:id/save", verifyJWT, async (req, res) => {
       const lessonId = req.params.id;
       const userEmail = req.tokenEmail;
-
       await lessonCollection.updateOne(
         { _id: new ObjectId(lessonId) },
         { $inc: { saves: 1 } }
       );
 
       const user = await usersCollection.findOne({ email: userEmail });
-
       if (!user.savedLessons) user.savedLessons = [];
 
       if (!user.savedLessons.includes(lessonId)) {
@@ -242,7 +237,6 @@ async function run() {
         { _id: new ObjectId(req.params.id) },
         { $inc: { report: 1 }, $push: { reports: newReport } }
       );
-
       res.send({ success: true });
     });
 
@@ -268,7 +262,6 @@ async function run() {
           text,
           createdAt: new Date(),
         };
-
         await lessonCollection.updateOne(
           {
             _id: new ObjectId(req.params.id),
@@ -332,7 +325,6 @@ async function run() {
 
       if (result.matchedCount === 0)
         return res.status(404).send({ message: "Lesson not found" });
-
       res.send({ message: "Lesson updated successfully" });
     });
 
