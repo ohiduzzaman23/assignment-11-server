@@ -19,7 +19,7 @@ admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
 });
 
-// ------ Middleware -------
+// --------------- Middleware --------------
 app.use(
   cors({
     origin: [process.env.CLIENT_DOMAIN],
@@ -38,7 +38,6 @@ const client = new MongoClient(process.env.MONGODB_URL, {
 const verifyJWT = async (req, res, next) => {
   const token = req?.headers?.authorization?.split(" ")[1];
   if (!token) return res.status(401).send({ message: "Unauthorized" });
-
   try {
     const decoded = await admin.auth().verifyIdToken(token);
     req.tokenEmail = decoded.email;
